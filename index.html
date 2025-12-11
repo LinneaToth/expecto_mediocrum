@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expecto Mediocrum</title>
+    <!-- Add magical font -->
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            /* Prevent scrollbars */
+            background-color: #000000;
+        }
+
+        canvas {
+            display: block;
+            /* Remove default inline spacing */
+        }
+
+        #app-title {
+            position: absolute;
+            top: 30px;
+            width: 100%;
+            text-align: center;
+            color: #FFD700;
+            font-family: 'Cinzel', serif;
+            font-size: 3rem;
+            pointer-events: none;
+            z-index: 10;
+            text-shadow: 0 0 15px rgba(255, 215, 0, 0.5);
+            letter-spacing: 4px;
+        }
+
+        #tracking-dot {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background-color: red;
+            border-radius: 50%;
+            pointer-events: none;
+            display: none;
+            z-index: 100;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 10px red;
+        }
+
+        #status-text {
+            position: absolute;
+            top: 90px;
+            /* Moved down below title */
+            width: 100%;
+            text-align: center;
+            color: rgba(255, 215, 0, 0.7);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.2rem;
+            pointer-events: none;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            z-index: 10;
+        }
+
+        .input_video {
+            display: none;
+        }
+    </style>
+    <!-- MediaPipe Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"
+        crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"
+        crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+    <div id="app-title">Expecto Mediocrum</div>
+    <div id="status-text">Flick to summon... Something?</div>
+    <div id="tracking-dot"></div>
+    <video class="input_video"></video>
+
+    <!-- Three.js from CDN -->
+    <script type="module">
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js';
+
+        // --- 1. Scene Setup ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x000000);
+
+        // --- 2. Camera Setup ---
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 30;
+
+        // --- 3. Renderer Setup ---
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // --- 4. Particle System Data ---
+        const particleCount = 5000;
+        const geometry = new THREE.BufferGeometry();
+
+        // We maintain two arrays: 
+        // 1. currentPositions (what is currently rendered)
+        // 2. targetPositions (where we want to go)
+        const currentPositions = new Float32Array(particleCount * 3);
+        const targetPositions = new Float32Array(particleCount * 3);
+
+        // To store the idle cloud state so we can return to it
+        const cloudPositions = new Float32Array(particleCount * 3);
+
+        // --- 5. Shape Generation Functions ---
+
+        // Helper: Random float between min and max
+        const rand = (min, max) => Math.random() * (max - min) + min;
+
+        function generateCloud() {
+            const arr = new Float32Array(particleCount * 3);
+            const radius = 10;
+            for (let i = 0; i < particleCount; i++) {
+                const phi = Math.acos(-1 + (2 * i) / particleCount);
+                const theta = Math.sqrt(particleCount * Math.PI) * phi;
+                const r = radius * Math.cbrt(Math.random());
+
+                // Random cloud jitter
+                const jitter = 0.5;
+                const u = Math.random();
+                const v = Math.random();
+                const theta_angle = 2 * Math.PI * u;
+                const phi_angle = Math.acos(2 * v - 1);
+
+                arr[i * 3] = r * Math.sin(phi_angle) * Math.cos(theta_angle);
+                arr[i * 3 + 1] = r * Math.sin(phi_angle) * Math.sin(theta_angle);
+                arr[i * 3 + 2] = r * Math.cos(phi_angle);
+            }
+            return arr;
+        }
+
+        // Initialize Cloud
+        const initialCloud = generateCloud();
+        cloudPositions.set(initialCloud);
+        currentPositions.set(initialCloud);
+        targetPositions.set(initialCloud);
+
+        // Helper to fill a range of particles into a specific shape
+        function fillShape(arr, startIndex, count, shapeFn) {
+            for (let i = 0; i < count; i++) {
+                const idx = (startIndex + i) * 3;
+                const pt = shapeFn(i / count); // Normalized progress 0-1
+                arr[idx] = pt.x;
+                arr[idx + 1] = pt.y;
+                arr[idx + 2] = pt.z;
+            }
+            return startIndex + count;
+        }
+
+        // --- Procedural Animal Generators ---
+
+        function generateWolf() {
+            const arr = new Float32Array(particleCount * 3);
+            let idx = 0;
+
+            // Body (Ellipsoid)
+            idx = fillShape(arr, idx, 1500, () => ({
+                x: rand(-4, 4), y: rand(-1.5, 1.5), z: rand(-1.5, 1.5)
+            }));
+
+            // Head (Sphere + offset)
+            idx = fillShape(arr, idx, 500, () => {
+                const r = rand(0, 1.5);
+                const theta = rand(0, Math.PI * 2);
+                const phi = rand(0, Math.PI);
+                return {
+                    x: 4.5 + r * Math.sin(phi) * Math.cos(theta),
+                    y: 1.5 + r * Math.sin(phi) * Math.sin(theta),
+                    z: r * Math.cos(phi)
+                };
+            });
+
+            // Ears (Triangular cones on top of head)
+            idx = fillShape(arr, idx, 200, (p) => {
+                const side = p < 0.5 ? 1 : -1;
+                return {
+                    x: 4.0 + rand(-0.3, 0.3),
+                    y: 3.0 + rand(0, 0.8), // Pointy up
+                    z: side * (0.6 + rand(-0.2, 0.2))
+                };
+            });
+
+            // Legs (4 Cylinders)
+            const legPos = [[2, -1.5, 1], [2, -1.5, -1], [-2, -1.5, 1], [-2, -1.5, -1]];
+            legPos.forEach(pos => {
+                idx = fillShape(arr, idx, 400, () => ({
+                    x: pos[0] + rand(-0.5, 0.5),
+                    y: pos[1] - rand(0, 4), // Downwards
+                    z: pos[2] + rand(-0.5, 0.5)
+                }));
+            });
+
+            // Tail
+            idx = fillShape(arr, idx, 400, () => ({
+                x: -4 - rand(0, 3), y: 0 - rand(0, 1), z: rand(-0.5, 0.5)
+            }));
+
+            // Fill rest
+            fillShape(arr, idx, particleCount - idx, () => ({
+                x: rand(-2, 2), y: rand(-2, 2), z: rand(-2, 2)
+            }));
+
+            return arr;
+        }
+
+        function generateEagle() {
+            const arr = new Float32Array(particleCount * 3);
+            let idx = 0;
+
+            // 1. Body (Streamlined, powerful chest)
+            idx = fillShape(arr, idx, 800, (p) => {
+                const t = rand(-1, 1); // length pos from back (-1) to front (1)
+                // Thicker chest towards front
+                const width = 0.8 + (t > 0 ? t * 0.5 : 0);
+                return {
+                    x: t * 2.0,
+                    y: rand(-0.5, 0.5) * width,
+                    z: rand(-0.8, 0.8) * width
+                };
+            });
+
+            // 2. Wings (Majestic soaring "V" shape with two segments)
+            const wingFunc = (p, side) => {
+                // p is 0 to 1 along the wing length
+                const span = p * 12; // Total span out from body
+
+                // Articulation: Inner wing rises sharply, outer wing extends and sweeps back
+                let yOffset, zOffset;
+                const jointP = 0.4; // Point of articulation
+
+                if (p < jointP) {
+                    // Inner wing: goes up strongly
+                    const localP = p / jointP;
+                    yOffset = localP * 4.0;
+                    zOffset = localP * 1.0;
+                } else {
+                    // Outer wing: continues out, less up, more swept back
+                    const localP = (p - jointP) / (1 - jointP);
+                    yOffset = 4.0 + localP * 2.0; // Continues rising slowly
+                    zOffset = 1.0 + localP * 5.0; // Sweeps back significantly
+                }
+
+                // Add thickness/feather texture, thinner towards tips
+                const thickness = (1 - p) * 0.8;
+
+                return {
+                    x: side * (1.0 + span), // Start just outside body
+                    y: 0.5 + yOffset + rand(-thickness, thickness), // Lifted up
+                    z: -zOffset + rand(-thickness, thickness) // Swept back
+                };
+            };
+
+            // Left Wing
+            idx = fillShape(arr, idx, 1600, (p) => wingFunc(p, 1));
+            // Right Wing
+            idx = fillShape(arr, idx, 1600, (p) => wingFunc(p, -1));
+
+            // 3. Head & Beak (Proud, looking forward)
+            idx = fillShape(arr, idx, 400, () => ({
+                x: 2.5 + rand(0, 0.8),  // Forward
+                y: 0.8 + rand(0, 0.6),  // Up slightly
+                z: rand(-0.3, 0.3)
+            }));
+
+            // 4. Tail (Fanned out behind)
+            idx = fillShape(arr, idx, 600, (p) => {
+                // p goes from 0 (base) to 1 (tip)
+                const spreadVar = rand(-1, 1); // random spread across width
+                const length = p * 4.0;
+                const spread = spreadVar * (0.5 + p * 2.5); // Fans out wider towards tip
+                return {
+                    x: -2.0 - length, // Backward
+                    y: 0 + rand(-0.2, 0.2), // Relatively flat plane
+                    z: spread // Fanning out sideways
+                };
+            });
+
+            // Remainder to center
+            fillShape(arr, idx, particleCount - idx, () => ({ x: 0, y: 0, z: 0 }));
+            return arr;
+        }
+
+        function generateStag() {
+            const arr = new Float32Array(particleCount * 3);
+            let idx = 0;
+
+            // 1. Body (Strong, standing tall - horizontal)
+            // Chest area (positive X) thicker than rear
+            idx = fillShape(arr, idx, 1200, (p) => {
+                const t = rand(-1, 1); // length pos -1 (rear) to 1 (chest)
+                // Profile: Chest is deeper
+                const girth = 1.2 + (t > 0 ? t * 0.4 : 0);
+                return {
+                    x: t * 2.5,
+                    y: rand(-1, 1) * girth,
+                    z: rand(-0.8, 0.8) * girth
+                };
+            });
+
+            // 2. Neck (Upright and majestic)
+            idx = fillShape(arr, idx, 600, (p) => ({
+                x: 2.2 + rand(0, 1) + p * 0.3, // Slightly forward
+                y: 1.5 + p * 3.5, // Rising high vertically
+                z: rand(-0.5, 0.5) * (1 - p * 0.4) // Tapering
+            }));
+
+            // 3. Head (Held high)
+            idx = fillShape(arr, idx, 300, () => ({
+                x: 3.2 + rand(0, 1.2), // Snout
+                y: 5.0 + rand(0, 0.8), // Top of neck
+                z: rand(-0.5, 0.5)
+            }));
+
+            // 4. Elaborate Antlers (The Crown)
+            // We use a segmented approach to create branching tines
+            idx = fillShape(arr, idx, 1500, (p) => {
+                const side = p < 0.5 ? 1 : -1; // Left or Right antler
+                // Normalize t from 0 to 1 for just one antler
+                const t = (p < 0.5 ? p * 2 : (p - 0.5) * 2);
+
+                let pt = { x: 0, y: 0, z: 0 };
+
+                // Base position on head
+                const originX = 3.5;
+                const originY = 5.6;
+                const originZ = side * 0.4;
+
+                // Branching logic
+                if (t < 0.5) {
+                    // Main Beam: Curves Up, Out, then slightly Back
+                    pt.x = originX - t * 0.5;
+                    pt.y = originY + t * 5.0;
+                    pt.z = originZ + side * (t * 3.5);
+                } else if (t < 0.65) {
+                    // Brow Tine: Points Forward and Low
+                    const localT = (t - 0.5) / 0.15;
+                    pt.x = originX + localT * 2.0;
+                    pt.y = originY + 0.5 + localT * 0.5;
+                    pt.z = originZ + side * localT * 0.5;
+                } else if (t < 0.8) {
+                    // Trez Tine: Points Up and Out
+                    const localT = (t - 0.65) / 0.15;
+                    pt.x = originX - 0.2;
+                    pt.y = originY + 2.5 + localT * 2.0;
+                    pt.z = originZ + side * (1.5 + localT * 1.0);
+                } else {
+                    // Crown: Fan at the top
+                    const localT = (t - 0.8) / 0.2;
+                    pt.x = originX - 1.0 + rand(-0.5, 0.5);
+                    pt.y = originY + 4.0 + localT * 1.5;
+                    pt.z = originZ + side * (3.0 + rand(-1.0, 1.0));
+                }
+
+                // Add noise for thickness
+                return {
+                    x: pt.x + rand(-0.08, 0.08),
+                    y: pt.y + rand(-0.08, 0.08),
+                    z: pt.z + rand(-0.08, 0.08)
+                };
+            });
+
+            // 5. Legs (Strong, Planted, Standing)
+            const legPos = [
+                { x: 2.0, z: 1.0 }, // Front Left
+                { x: 2.0, z: -1.0 }, // Front Right
+                { x: -2.0, z: 1.0 }, // Back Left
+                { x: -2.0, z: -1.0 }  // Back Right
+            ];
+
+            legPos.forEach((pos, i) => {
+                idx = fillShape(arr, idx, 350, () => ({
+                    x: pos.x + rand(-0.4, 0.4),
+                    // Slight stagger for natural stance
+                    y: -1.0 - rand(0, 4.0),
+                    z: pos.z + rand(-0.4, 0.4)
+                }));
+            });
+
+            // Remainder to center
+            fillShape(arr, idx, particleCount - idx, () => ({ x: 0, y: 0, z: 0 }));
+            return arr;
+        }
+
+        function generateDemon() {
+            const arr = new Float32Array(particleCount * 3);
+            let idx = 0;
+
+            // Torso (Bulky, vertical) - Slightly reduced count to save for face
+            idx = fillShape(arr, idx, 1000, () => ({
+                x: rand(-1.5, 1.5), y: rand(-2, 2), z: rand(-1, 1)
+            }));
+
+            // Head Base - Reduced size
+            idx = fillShape(arr, idx, 200, () => ({
+                x: rand(-0.8, 0.8), y: 2.2 + rand(0, 1.0), z: rand(-0.5, 0.8)
+            }));
+
+            // --- Scary Face Features ---
+            const headCenterY = 2.7;
+            const headFrontZ = 0.8;
+
+            // 1. Angled Eyes (Two slanted glowing slits)
+            idx = fillShape(arr, idx, 200, (p) => {
+                const side = p < 0.5 ? 1 : -1; // Left/Right eye
+                const t = (p < 0.5 ? p * 2 : (p - 0.5) * 2); // 0-1 per eye
+                return {
+                    // Slant inwards: starts wider (0.6), goes in (to 0.3)
+                    x: side * (0.6 - t * 0.3),
+                    // Slant downwards towards center frown
+                    y: headCenterY + 0.3 - t * 0.15,
+                    // Pushed forward, slight depth noise
+                    z: headFrontZ + rand(0, 0.1)
+                };
+            });
+
+            // 2. Jagged Maw (A messy, toothy arc below eyes)
+            idx = fillShape(arr, idx, 300, (p) => {
+                // p goes 0 to 1 across the mouth width
+                const xPos = (p - 0.5) * 1.4; // Wide mouth
+                // Jagged up and down movement using sine and random noise for teeth effect
+                const yOffset = Math.abs(Math.sin(p * Math.PI * 8)) * 0.25 + rand(-0.05, 0.05);
+
+                return {
+                    x: xPos,
+                    y: headCenterY - 0.6 - yOffset, // Below eyes, curving down
+                    z: headFrontZ + 0.1 + rand(0, 0.15) // Slightly more forward
+                };
+            });
+
+            // Horns (Curved Upwards)
+            idx = fillShape(arr, idx, 400, (p) => {
+                const side = p < 0.5 ? 1 : -1; // Left or Right horn
+                const t = (p < 0.5 ? p * 2 : (p - 0.5) * 2);
+                return {
+                    x: side * (0.8 + t * 1.5),
+                    y: 3.2 + Math.pow(t, 2) * 2,
+                    z: 0.5 - t * 0.5
+                };
+            });
+
+            // Wings (Bat-like, Jagged)
+            idx = fillShape(arr, idx, 1600, (p) => {
+                const side = p < 0.5 ? 1 : -1;
+                const t = (p < 0.5 ? p * 2 : (p - 0.5) * 2);
+                return {
+                    x: side * (1 + t * 7),
+                    y: 1.5 + Math.sin(t * Math.PI) * 3 - t * 2,
+                    z: 1 + t
+                };
+            });
+
+            // Legs/Tail remainder
+            fillShape(arr, idx, particleCount - idx, () => ({
+                x: rand(-1.2, 1.2), y: -3 + rand(0, 2), z: rand(-0.8, 0.8)
+            }));
+
+            return arr;
+        }
+
+        function generateDragon() {
+            const arr = new Float32Array(particleCount * 3);
+            let idx = 0;
+
+            // Long Body
+            idx = fillShape(arr, idx, 800, () => ({
+                x: rand(-1.2, 1.2), y: rand(-1, 1), z: rand(-2.5, 2.5)
+            }));
+
+            // Neck (Snake-like up)
+            idx = fillShape(arr, idx, 500, (p) => ({
+                x: rand(-0.4, 0.4),
+                y: 1 + p * 3.5,
+                z: 2.5 + p * 2.5
+            }));
+
+            // Head (Snout)
+            idx = fillShape(arr, idx, 300, () => ({
+                x: rand(-0.5, 0.5), y: 4.5 + rand(0, 0.8), z: 5 + rand(0, 1.5)
+            }));
+
+            // Wings (Massive Span)
+            idx = fillShape(arr, idx, 2000, (p) => {
+                const side = p < 0.5 ? 1 : -1;
+                const t = (p < 0.5 ? p * 2 : (p - 0.5) * 2);
+                return {
+                    x: side * (0.5 + t * 15), // Much wider (was 9)
+                    y: 1.5 + Math.sin(t * Math.PI) * 4, // Higher arch
+                    z: 0 - t * 5 // Swept back
+                };
+            });
+
+            // Tail
+            idx = fillShape(arr, idx, 400, (p) => ({
+                x: Math.sin(p * 10) * 0.5,
+                y: -0.5 + p,
+                z: -2.5 - p * 6
+            }));
+
+            // Fire Breath (Cone from mouth)
+            fillShape(arr, idx, particleCount - idx, (p) => {
+                const dist = p * 12; // Length of fire
+                const spread = p * 3; // Spread of fire
+                return {
+                    x: rand(-spread, spread),
+                    y: 4.5 + rand(-spread, spread) - dist * 0.3, // Angled slightly down
+                    z: 6 + dist // Shooting forward from head (Z=6)
+                };
+            });
+
+            return arr;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(currentPositions, 3));
+
+        // --- 6. Material Setup ---
+
+        // Generate a soft glowing texture for the "magic" effect
+        function getTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+
+            // Radial gradient from white center to transparent edge
+            const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)'); // Core
+            gradient.addColorStop(0.2, 'rgba(255, 255, 255, 0.8)'); // Bright halo
+            gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.2)'); // Soft glow
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // Transparent
+
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 32, 32);
+
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+        const material = new THREE.PointsMaterial({
+            color: 0xFFD700, // Gold base color
+            map: getTexture(), // Use our generated glow texture
+            size: 0.5,       // Increased size for soft glow
+            sizeAttenuation: true,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending, // Key for "magic" light accumulation
+            depthWrite: false // Prevents occlusion, creates "ghostly" depth
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // --- 6.1 Halo/Glow Setup (The "Halo of Glow") ---
+        // We create a second particle system using the SAME geometry.
+        // This acts as a volumetric aura around the sharp core particles.
+        const haloMaterial = new THREE.PointsMaterial({
+            color: 0xFFD700,
+            map: getTexture(),
+            size: 2.0,        // Much larger to create the "halo"
+            sizeAttenuation: true,
+            transparent: true,
+            opacity: 0.05,    // Reduced to 0.05 for very subtle glow
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        const haloParticles = new THREE.Points(geometry, haloMaterial);
+        scene.add(haloParticles);
+
+        // --- 7. Animation State ---
+        let isTransformed = false;
+        let transitionSpeed = 0.05; // Lerp factor (0 to 1)
+
+        // --- 8. Window Resize ---
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- 9. Main Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. Lerp Logic: Move currentPositions towards targetPositions
+            const positions = particles.geometry.attributes.position.array;
+            let needsUpdate = false;
+
+            for (let i = 0; i < particleCount * 3; i++) {
+                const dist = targetPositions[i] - positions[i];
+                if (Math.abs(dist) > 0.01) {
+                    positions[i] += dist * transitionSpeed;
+                    needsUpdate = true;
+                } else {
+                    positions[i] = targetPositions[i];
+                }
+            }
+
+            if (needsUpdate) {
+                particles.geometry.attributes.position.needsUpdate = true;
+                // Note: haloParticles shares the same geometry, so it updates automatically!
+            }
+
+            // 2. Rotation Logic
+            if (isTransformed) {
+                // If animal, rotate faster or "run"
+                particles.rotation.y += 0.01;
+                haloParticles.rotation.y += 0.01; // Sync rotation
+
+                // Add a subtle bounce
+                const bounce = Math.sin(Date.now() * 0.005) * 0.5;
+                particles.position.y = bounce;
+                haloParticles.position.y = bounce;
+            } else {
+                // Idle cloud rotation
+                particles.rotation.y += 0.002;
+                particles.rotation.x += 0.001;
+
+                haloParticles.rotation.y += 0.002;
+                haloParticles.rotation.x += 0.001;
+
+                // Reset position
+                particles.position.y = 0;
+                haloParticles.position.y = 0;
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 10. Spell Logic ---
+        const statusText = document.getElementById('status-text');
+
+        let dissolveTimeout = null;
+
+        function dissolveShape() {
+            if (dissolveTimeout) {
+                clearTimeout(dissolveTimeout);
+                dissolveTimeout = null;
+            }
+
+            targetPositions.set(cloudPositions);
+            isTransformed = false;
+            statusText.innerText = "Flick to summon... Something?";
+            statusText.style.color = 'rgba(255, 215, 0, 0.7)';
+
+            // Animate color back quickly
+            setTimeout(() => {
+                material.color.setHex(0xFFD700);
+                haloMaterial.color.setHex(0xFFD700);
+                material.size = 0.5;
+                haloMaterial.size = 2.0;
+            }, 200);
+        }
+
+        function triggerAnimalTransformation() {
+            if (isTransformed) return; // Prevent spamming
+
+            isTransformed = true;
+
+            // Pick Random Animal
+            const animals = ['Wolf', 'Eagle', 'Stag', 'Demon', 'Dragon'];
+            const choice = animals[Math.floor(Math.random() * animals.length)];
+
+            console.log("Conjuring:", choice);
+            statusText.innerText = `Conjured: ${choice} (Palm to Dismiss)`;
+            statusText.style.color = '#FFFFFF';
+
+            let newShape;
+            if (choice === 'Wolf') newShape = generateWolf();
+            else if (choice === 'Eagle') newShape = generateEagle();
+            else if (choice === 'Stag') newShape = generateStag();
+            else if (choice === 'Demon') newShape = generateDemon();
+            else newShape = generateDragon();
+
+            // Set Target
+            targetPositions.set(newShape);
+
+            // Visual Flare
+            let colorHex;
+            if (choice === 'Demon' || choice === 'Dragon') {
+                colorHex = 0xFF4500; // Red/Orange for monsters
+            } else {
+                colorHex = 0x00FFFF; // Spirit Blue for animals
+            }
+
+            material.color.setHex(colorHex);
+            haloMaterial.color.setHex(colorHex);
+
+            material.size = 0.7; // Flare up core
+            haloMaterial.size = 3.0; // Flare up halo
+
+            // Revert automatically after 8 seconds
+            if (dissolveTimeout) clearTimeout(dissolveTimeout);
+            dissolveTimeout = setTimeout(dissolveShape, 8000);
+        }
+
+
+        // --- 11. MediaPipe Logic ---
+        const videoElement = document.querySelector('.input_video');
+        const dotElement = document.getElementById('tracking-dot');
+
+        let previousTip = null;
+        let lastCastTime = 0;
+        const CAST_COOLDOWN = 2000; // Reduced cooldown so you can cast again sooner after dissolving
+        // Reduced threshold from 0.002 to 0.0008 to catch lighter flicks
+        const VELOCITY_THRESHOLD = 0.0008;
+
+        // Helper to detect open palm
+        function isPalmOpen(landmarks) {
+            const wrist = landmarks[0];
+            // Tips: Index(8), Middle(12), Ring(16), Pinky(20)
+            const tips = [8, 12, 16, 20];
+            // PIPs (Knuckles): Index(6), Middle(10), Ring(14), Pinky(18)
+            const pips = [6, 10, 14, 18];
+
+            // Check if all 4 fingers are extended (tip further from wrist than knuckle)
+            for (let i = 0; i < 4; i++) {
+                const tip = landmarks[tips[i]];
+                const pip = landmarks[pips[i]];
+
+                const dTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+                const dPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
+
+                if (dTip < dPip) return false; // Finger is curled
+            }
+            return true;
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const indexTip = landmarks[8];
+                const currentTime = Date.now();
+
+                const x = (1 - indexTip.x) * window.innerWidth;
+                const y = indexTip.y * window.innerHeight;
+
+                dotElement.style.left = `${x}px`;
+                dotElement.style.top = `${y}px`;
+                dotElement.style.display = 'block';
+
+                // --- Gesture Logic ---
+
+                // 1. Dismiss Gesture (Open Palm)
+                if (isTransformed && isPalmOpen(landmarks)) {
+                    dissolveShape();
+                    lastCastTime = currentTime; // Reset cooldown so we don't accidentally cast immediately
+                }
+
+                // 2. Flick Gesture
+                if (previousTip && !isTransformed) {
+                    const dt = currentTime - previousTip.time;
+                    if (dt > 0) {
+                        const dx = indexTip.x - previousTip.x;
+                        const dy = indexTip.y - previousTip.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        const velocity = distance / dt;
+
+                        if (velocity > VELOCITY_THRESHOLD && (currentTime - lastCastTime > CAST_COOLDOWN)) {
+                            triggerAnimalTransformation();
+                            lastCastTime = currentTime;
+                        }
+                    }
+                }
+                previousTip = { x: indexTip.x, y: indexTip.y, time: currentTime };
+            } else {
+                dotElement.style.display = 'none';
+                previousTip = null;
+            }
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            // Lowered tracking confidence slightly to maintain lock during fast motion blur
+            minTrackingConfidence: 0.4
+        });
+
+        hands.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720
+        });
+
+        cameraUtils.start();
+
+    </script>
+</body>
+
+</html>
