@@ -38,13 +38,13 @@
             position: absolute;
             width: 10px;
             height: 10px;
-            background-color: red;
-            border-radius: 50%;
+            /* background-color: red;  <-- Removed color */
+            /* border-radius: 50%;     <-- Removed shape */
             pointer-events: none;
             display: none;
             z-index: 100;
             transform: translate(-50%, -50%);
-            box-shadow: 0 0 10px red;
+            /* box-shadow: 0 0 10px red; <-- Removed shadow */
         }
 
         #status-text {
@@ -505,23 +505,58 @@
                 x: rand(-0.5, 0.5), y: 4.5 + rand(0, 0.8), z: 5 + rand(0, 1.5)
             }));
 
-            // Wings (Massive Span)
+            // Wings (Wide Base, Narrow Tip)
             idx = fillShape(arr, idx, 2000, (p) => {
                 const side = p < 0.5 ? 1 : -1;
-                const t = (p < 0.5 ? p * 2 : (p - 0.5) * 2);
+                const t = (p < 0.5 ? p * 2 : (p - 0.5) * 2); // 0 (body) to 1 (tip)
+
+                // Wing Span
+                const span = 15;
+                const xPos = side * (0.5 + t * span);
+
+                // Wing Arch
+                const yPos = 1.5 + Math.sin(t * Math.PI * 0.8) * 4;
+
+                // Wing Chord (Width along Z axis) - Tapers from base to tip
+                const baseChord = 8.0; // Wide base
+                const tipChord = 0.5;
+                const currentChord = baseChord * (1 - t) + tipChord * t;
+
+                // Randomize Z within the chord width to fill the membrane
+                const zCenter = -t * 5; // Sweep back
+                const zOffset = rand(-currentChord / 2, currentChord / 2);
+
                 return {
-                    x: side * (0.5 + t * 15), // Much wider (was 9)
-                    y: 1.5 + Math.sin(t * Math.PI) * 4, // Higher arch
-                    z: 0 - t * 5 // Swept back
+                    x: xPos,
+                    y: yPos + rand(-0.1, 0.1),
+                    z: zCenter + zOffset
                 };
             });
 
-            // Tail
-            idx = fillShape(arr, idx, 400, (p) => ({
-                x: Math.sin(p * 10) * 0.5,
-                y: -0.5 + p,
-                z: -2.5 - p * 6
-            }));
+            // Tail (Downward Spiral & Tapering)
+            idx = fillShape(arr, idx, 600, (p) => {
+                // p: 0 (base) -> 1 (tip)
+
+                // Spiral Path parameters
+                const turns = 2.0;
+                const angle = p * Math.PI * 2 * turns;
+                // Spiral radius expands slightly as it goes down
+                const spiralRad = 0.5 + p * 1.5;
+
+                // Spine Position
+                const cx = Math.sin(angle) * spiralRad;
+                const cy = -0.5 - p * 5.0; // Moves Downward
+                const cz = -2.5 - (p * 2.0) + Math.cos(angle) * spiralRad; // Moves Back & Spirals
+
+                // Tapering Thickness (Wide at base, narrow at tip)
+                const thickness = 0.8 * (1 - p) + 0.1;
+
+                return {
+                    x: cx + rand(-thickness, thickness),
+                    y: cy + rand(-thickness, thickness),
+                    z: cz + rand(-thickness, thickness)
+                };
+            });
 
             // Fire Breath (Cone from mouth)
             fillShape(arr, idx, particleCount - idx, (p) => {
@@ -542,7 +577,7 @@
         // --- 6. Material Setup ---
 
         // Generate a soft glowing texture for the "magic" effect
-        function getTexture() {
+        function getOrbTexture() {
             const canvas = document.createElement('canvas');
             canvas.width = 32;
             canvas.height = 32;
@@ -563,9 +598,42 @@
             return texture;
         }
 
+        // Generate a jagged cross texture for the "dismiss" effect
+        function getCrossTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const context = canvas.getContext('2d');
+
+            // Red Glow
+            const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+            gradient.addColorStop(0, 'rgba(255, 50, 50, 1)');
+            gradient.addColorStop(0.5, 'rgba(255, 0, 0, 0.4)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 64, 64);
+
+            // Draw Cross with narrowing tips (4-pointed star)
+            context.beginPath();
+            context.fillStyle = '#FFCCCC'; // White-ish red core
+            context.moveTo(32, 10); // Top
+            context.quadraticCurveTo(32, 32, 54, 32); // Right
+            context.quadraticCurveTo(32, 32, 32, 54); // Bottom
+            context.quadraticCurveTo(32, 32, 10, 32); // Left
+            context.quadraticCurveTo(32, 32, 32, 10); // Back to Top
+            context.fill();
+
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+        const orbTexture = getOrbTexture();
+        const crossTexture = getCrossTexture();
+
         const material = new THREE.PointsMaterial({
             color: 0xFFD700, // Gold base color
-            map: getTexture(), // Use our generated glow texture
+            map: orbTexture, // Use our generated glow texture
             size: 0.5,       // Increased size for soft glow
             sizeAttenuation: true,
             transparent: true,
@@ -582,7 +650,7 @@
         // This acts as a volumetric aura around the sharp core particles.
         const haloMaterial = new THREE.PointsMaterial({
             color: 0xFFD700,
-            map: getTexture(),
+            map: orbTexture,
             size: 2.0,        // Much larger to create the "halo"
             sizeAttenuation: true,
             transparent: true,
@@ -594,9 +662,62 @@
         const haloParticles = new THREE.Points(geometry, haloMaterial);
         scene.add(haloParticles);
 
+        // --- 6.2 Wand & Spark System ---
+
+        // 1. The Wand Tip (Glowing Orb)
+        const wandMaterial = new THREE.SpriteMaterial({
+            map: orbTexture,
+            color: 0x00FFFF, // Cyan glow
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            opacity: 0.8
+        });
+        const wandSprite = new THREE.Sprite(wandMaterial);
+        wandSprite.scale.set(2, 2, 1); // Size of the light
+        wandSprite.visible = false;
+        scene.add(wandSprite);
+
+        // 2. The Sparks (Particle System)
+        const sparkCount = 200;
+        const sparkGeo = new THREE.BufferGeometry();
+        const sparkPos = new Float32Array(sparkCount * 3);
+        const sparkColors = new Float32Array(sparkCount * 3); // For fading to black
+        const sparkVel = []; // Store velocity vectors
+        const sparkLife = new Float32Array(sparkCount); // Life 0 to 1
+
+        for (let i = 0; i < sparkCount; i++) {
+            sparkVel.push(new THREE.Vector3());
+            sparkPos[i * 3] = 0; sparkPos[i * 3 + 1] = 0; sparkPos[i * 3 + 2] = 0;
+            sparkLife[i] = 0;
+            // Initialize colors to black (invisible)
+            sparkColors[i * 3] = 0; sparkColors[i * 3 + 1] = 0; sparkColors[i * 3 + 2] = 0;
+        }
+
+        sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+        sparkGeo.setAttribute('color', new THREE.BufferAttribute(sparkColors, 3));
+
+        const sparkMat = new THREE.PointsMaterial({
+            size: 0.4,
+            map: orbTexture,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            vertexColors: true // Allows us to fade individual sparks
+        });
+
+        const sparkSystem = new THREE.Points(sparkGeo, sparkMat);
+        scene.add(sparkSystem);
+
+        let sparkIdx = 0; // Circular buffer index
+        let handDetected = false;
+        let targetWandPos = new THREE.Vector3();
+        let sparkType = 'normal'; // 'normal' | 'cross'
+
+
         // --- 7. Animation State ---
         let isTransformed = false;
         let transitionSpeed = 0.05; // Lerp factor (0 to 1)
+        let lastInteractionTime = 0; // Track when user last touched the model
 
         // --- 8. Window Resize ---
         window.addEventListener('resize', onWindowResize, false);
@@ -606,39 +727,139 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
+        // Helper to map Screen XY to World Z-Plane
+        function getZPlanePosition(screenX, screenY, targetZ) {
+            const vec = new THREE.Vector3();
+            vec.set(
+                (screenX / window.innerWidth) * 2 - 1,
+                -(screenY / window.innerHeight) * 2 + 1,
+                0.5
+            );
+            vec.unproject(camera);
+            vec.sub(camera.position).normalize();
+            const distance = (targetZ - camera.position.z) / vec.z;
+            const pos = new THREE.Vector3();
+            pos.copy(camera.position).add(vec.multiplyScalar(distance));
+            return pos;
+        }
+
         // --- 9. Main Animation Loop ---
         function animate() {
             requestAnimationFrame(animate);
 
+            // --- Wand & Spark Logic ---
+            if (handDetected) {
+                // Smoothly move wand tip
+                wandSprite.visible = true;
+                wandSprite.position.lerp(targetWandPos, 0.2);
+
+                // Emit Sparks
+                const emissionRate = 2;
+                for (let k = 0; k < emissionRate; k++) {
+                    sparkIdx = (sparkIdx + 1) % sparkCount;
+
+                    // Reset Spark at Wand Position
+                    sparkPos[sparkIdx * 3] = wandSprite.position.x;
+                    sparkPos[sparkIdx * 3 + 1] = wandSprite.position.y;
+                    sparkPos[sparkIdx * 3 + 2] = wandSprite.position.z;
+
+                    // Give random velocity (Spray)
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.random() * Math.PI;
+                    const speed = 0.05 + Math.random() * 0.1;
+
+                    sparkVel[sparkIdx].set(
+                        Math.sin(phi) * Math.cos(theta) * speed,
+                        Math.sin(phi) * Math.sin(theta) * speed,
+                        Math.cos(phi) * speed
+                    );
+
+                    sparkLife[sparkIdx] = 1.0; // Full life
+                }
+            } else {
+                wandSprite.visible = false;
+            }
+
+            // Update All Sparks
+            const positions = sparkSystem.geometry.attributes.position.array;
+            const colors = sparkSystem.geometry.attributes.color.array;
+
+            for (let i = 0; i < sparkCount; i++) {
+                if (sparkLife[i] > 0) {
+                    // Physics
+                    positions[i * 3] += sparkVel[i].x;
+                    positions[i * 3 + 1] += sparkVel[i].y;
+                    positions[i * 3 + 2] += sparkVel[i].z;
+
+                    // Gravity (optional, subtle)
+                    sparkVel[i].y -= 0.002;
+
+                    // Decay
+                    sparkLife[i] -= 0.02;
+
+                    // Color Fade
+                    const life = Math.max(0, sparkLife[i]);
+
+                    if (sparkType === 'cross') {
+                        // Red/Orange Sparks for Dismissal
+                        colors[i * 3] = life;         // R
+                        colors[i * 3 + 1] = life * 0.2; // G (red-orange)
+                        colors[i * 3 + 2] = 0;          // B
+                    } else {
+                        // Default White -> Gold -> Black
+                        colors[i * 3] = life;   // R
+                        colors[i * 3 + 1] = life * 0.9; // G (slight gold tint)
+                        colors[i * 3 + 2] = life * 0.5; // B (gold tint)
+                    }
+
+                } else {
+                    // Hide
+                    colors[i * 3] = 0;
+                    colors[i * 3 + 1] = 0;
+                    colors[i * 3 + 2] = 0;
+                }
+            }
+            sparkSystem.geometry.attributes.position.needsUpdate = true;
+            sparkSystem.geometry.attributes.color.needsUpdate = true;
+
+
             // 1. Lerp Logic: Move currentPositions towards targetPositions
-            const positions = particles.geometry.attributes.position.array;
+            const particlePositions = particles.geometry.attributes.position.array;
             let needsUpdate = false;
 
             for (let i = 0; i < particleCount * 3; i++) {
-                const dist = targetPositions[i] - positions[i];
+                const dist = targetPositions[i] - particlePositions[i];
                 if (Math.abs(dist) > 0.01) {
-                    positions[i] += dist * transitionSpeed;
+                    particlePositions[i] += dist * transitionSpeed;
                     needsUpdate = true;
                 } else {
-                    positions[i] = targetPositions[i];
+                    particlePositions[i] = targetPositions[i];
                 }
             }
 
             if (needsUpdate) {
                 particles.geometry.attributes.position.needsUpdate = true;
-                // Note: haloParticles shares the same geometry, so it updates automatically!
             }
 
             // 2. Rotation Logic
             if (isTransformed) {
-                // If animal, rotate faster or "run"
-                particles.rotation.y += 0.01;
-                haloParticles.rotation.y += 0.01; // Sync rotation
+                // Only auto-rotate if user hasn't interacted recently (200ms)
+                if (Date.now() - lastInteractionTime > 200) {
+                    // If animal, rotate faster or "run"
+                    particles.rotation.y += 0.01;
 
-                // Add a subtle bounce
-                const bounce = Math.sin(Date.now() * 0.005) * 0.5;
-                particles.position.y = bounce;
-                haloParticles.position.y = bounce;
+                    // Add a subtle bounce
+                    const bounce = Math.sin(Date.now() * 0.005) * 0.5;
+                    particles.position.y = bounce;
+                    haloParticles.position.y = bounce;
+                } else {
+                    // Manual control active - sync halo position/rotation strictly
+                    haloParticles.position.copy(particles.position);
+                }
+
+                // Always sync halo rotation to core particles
+                haloParticles.rotation.copy(particles.rotation);
+
             } else {
                 // Idle cloud rotation
                 particles.rotation.y += 0.002;
@@ -667,18 +888,33 @@
                 dissolveTimeout = null;
             }
 
+            // Transformation Logic
             targetPositions.set(cloudPositions);
             isTransformed = false;
             statusText.innerText = "Flick to summon... Something?";
             statusText.style.color = 'rgba(255, 215, 0, 0.7)';
 
-            // Animate color back quickly
+            // --- Trigger Tracker Transformation (Red Cross) ---
+            sparkType = 'cross';
+            wandSprite.material.map = crossTexture;
+            wandSprite.material.color.setHex(0xFF0000);
+            wandSprite.scale.set(3, 3, 1); // Slightly larger for the cross
+
+            // Animate cloud color back quickly
             setTimeout(() => {
                 material.color.setHex(0xFFD700);
                 haloMaterial.color.setHex(0xFFD700);
                 material.size = 0.5;
                 haloMaterial.size = 2.0;
             }, 200);
+
+            // Revert Tracker to Normal after 1.5 seconds
+            setTimeout(() => {
+                sparkType = 'normal';
+                wandSprite.material.map = orbTexture;
+                wandSprite.material.color.setHex(0x00FFFF);
+                wandSprite.scale.set(2, 2, 1);
+            }, 1500);
         }
 
         function triggerAnimalTransformation() {
@@ -718,9 +954,9 @@
             material.size = 0.7; // Flare up core
             haloMaterial.size = 3.0; // Flare up halo
 
-            // Revert automatically after 8 seconds
-            if (dissolveTimeout) clearTimeout(dissolveTimeout);
-            dissolveTimeout = setTimeout(dissolveShape, 8000);
+            // Removed auto-revert timeout to keep animal indefinitely
+            // if (dissolveTimeout) clearTimeout(dissolveTimeout);
+            // dissolveTimeout = setTimeout(dissolveShape, 8000);
         }
 
 
@@ -730,6 +966,7 @@
 
         let previousTip = null;
         let lastCastTime = 0;
+        let palmOpenStartTime = 0; // New timer for holding the gesture
         const CAST_COOLDOWN = 2000; // Reduced cooldown so you can cast again sooner after dissolving
         // Reduced threshold from 0.002 to 0.0008 to catch lighter flicks
         const VELOCITY_THRESHOLD = 0.0008;
@@ -768,15 +1005,50 @@
                 dotElement.style.top = `${y}px`;
                 dotElement.style.display = 'block';
 
+                // Update 3D Wand Position
+                handDetected = true;
+                // Project 2D screen coord to Z=20 plane (in front of particles)
+                targetWandPos = getZPlanePosition(x, y, 20);
+
                 // --- Gesture Logic ---
 
-                // 1. Dismiss Gesture (Open Palm)
-                if (isTransformed && isPalmOpen(landmarks)) {
-                    dissolveShape();
-                    lastCastTime = currentTime; // Reset cooldown so we don't accidentally cast immediately
+                // 1. Dismiss Gesture (Open Palm) - Hold for 500ms
+                if (isTransformed) {
+                    if (isPalmOpen(landmarks)) {
+                        if (palmOpenStartTime === 0) {
+                            palmOpenStartTime = currentTime; // Start timer
+                        } else if (currentTime - palmOpenStartTime > 500) {
+                            // 500ms passed, dissolve
+                            dissolveShape();
+                            lastCastTime = currentTime;
+                            palmOpenStartTime = 0;
+                        }
+                    } else {
+                        palmOpenStartTime = 0; // Reset if hand closes or isn't palm
+
+                        // 2. Rotation Logic (Wand/Finger Control)
+                        // Only rotate if NOT dismissing (Palm closed, likely pointing)
+                        if (previousTip) {
+                            const SENSITIVITY = 6.0;
+
+                            // Calculate movement deltas
+                            // Note: We use (prev - curr) for X because of the mirror effect logic 
+                            // (Moving hand Right physically = Dot moves Right on screen)
+                            const deltaX = previousTip.x - indexTip.x;
+                            const deltaY = indexTip.y - previousTip.y;
+
+                            // Apply rotation
+                            particles.rotation.y += deltaX * SENSITIVITY;
+                            particles.rotation.x += deltaY * SENSITIVITY;
+
+                            lastInteractionTime = currentTime;
+                        }
+                    }
+                } else {
+                    palmOpenStartTime = 0;
                 }
 
-                // 2. Flick Gesture
+                // 2. Flick Gesture (Only when NOT transformed)
                 if (previousTip && !isTransformed) {
                     const dt = currentTime - previousTip.time;
                     if (dt > 0) {
@@ -795,6 +1067,7 @@
             } else {
                 dotElement.style.display = 'none';
                 previousTip = null;
+                handDetected = false;
             }
         }
 
