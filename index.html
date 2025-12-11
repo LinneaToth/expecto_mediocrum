@@ -62,6 +62,23 @@
             z-index: 10;
         }
 
+        /* Responsive Styles for Mobile */
+        @media (max-width: 768px) {
+            #status-text {
+                top: auto;
+                /* Release from top */
+                bottom: 50px;
+                /* Position at bottom */
+                font-size: 1rem;
+            }
+
+            #app-title {
+                font-size: 2rem;
+                /* Scale title down slightly */
+                top: 20px;
+            }
+        }
+
         .input_video {
             display: none;
         }
